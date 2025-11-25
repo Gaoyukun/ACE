@@ -129,13 +129,12 @@ class TestCLI:
 
 class TestInvokeCodex:
     def test_successful_invocation(self, tmp_path: Path):
-        """Test that invoke_codex calls subprocess correctly."""
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "Task completed\n---\nSESSION_ID: abc123"
-        mock_result.stderr = ""
+        """Test that invoke_codex calls subprocess.Popen correctly."""
+        mock_process = mock.MagicMock()
+        mock_process.returncode = 0
+        mock_process.communicate.return_value = ("Task completed\n---\nSESSION_ID: abc123", None)
         
-        with mock.patch.object(subprocess, 'run', return_value=mock_result) as mock_run:
+        with mock.patch.object(subprocess, 'Popen', return_value=mock_process) as mock_popen:
             output, session_id = Orchestrator.invoke_codex(
                 role="auditor",
                 usr_cwd=tmp_path,
@@ -144,15 +143,14 @@ class TestInvokeCodex:
             
             assert session_id == "abc123"
             assert "Task completed" in output
-            mock_run.assert_called_once()
+            mock_popen.assert_called_once()
 
     def test_failed_invocation_raises(self, tmp_path: Path):
-        mock_result = mock.MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-        mock_result.stderr = "Error occurred"
+        mock_process = mock.MagicMock()
+        mock_process.returncode = 1
+        mock_process.communicate.return_value = ("", None)
         
-        with mock.patch.object(subprocess, 'run', return_value=mock_result):
+        with mock.patch.object(subprocess, 'Popen', return_value=mock_process):
             try:
                 Orchestrator.invoke_codex(
                     role="commander",
@@ -164,10 +162,10 @@ class TestInvokeCodex:
                 assert "exited with code 1" in str(e)
 
     def test_timeout_raises(self, tmp_path: Path):
-        with mock.patch.object(
-            subprocess, 'run',
-            side_effect=subprocess.TimeoutExpired(cmd="test", timeout=10)
-        ):
+        mock_process = mock.MagicMock()
+        mock_process.communicate.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=10)
+        
+        with mock.patch.object(subprocess, 'Popen', return_value=mock_process):
             try:
                 Orchestrator.invoke_codex(
                     role="executor",

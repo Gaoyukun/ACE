@@ -126,19 +126,21 @@ def invoke_codex(
     Console.info(f"Task: {task[:80]}{'...' if len(task) > 80 else ''}")
     
     try:
-        result = subprocess.run(
+        # Use Popen to stream stderr in real-time while capturing stdout
+        process = subprocess.Popen(
             cmd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=None,  # stderr goes directly to console (real-time)
             text=True,
-            timeout=timeout,
             cwd=str(SCRIPT_DIR)
         )
         
-        if result.returncode != 0:
-            Console.error(f"codex stderr: {result.stderr}")
-            raise RuntimeError(f"codex exited with code {result.returncode}")
+        stdout, _ = process.communicate(timeout=timeout)
         
-        output = result.stdout.strip()
+        if process.returncode != 0:
+            raise RuntimeError(f"codex exited with code {process.returncode}")
+        
+        output = stdout.strip()
         
         # Extract SESSION_ID from output
         session_id = None
@@ -150,6 +152,7 @@ def invoke_codex(
         return output, session_id
         
     except subprocess.TimeoutExpired:
+        process.kill()
         raise RuntimeError(f"codex timed out after {timeout}s")
 
 

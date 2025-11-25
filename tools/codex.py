@@ -289,6 +289,26 @@ def find_codex_executable() -> str:
     return 'codex'
 
 
+def _cleanup_process(process: Optional[subprocess.Popen]):
+    """确保子进程被正确终止"""
+    if process is None:
+        return
+    
+    try:
+        # 先尝试优雅终止
+        process.terminate()
+        try:
+            process.wait(timeout=FORCE_KILL_DELAY)
+            log_info(f"Process {process.pid} terminated gracefully")
+        except subprocess.TimeoutExpired:
+            # 强制杀死
+            process.kill()
+            process.wait(timeout=FORCE_KILL_DELAY)
+            log_info(f"Process {process.pid} killed forcefully")
+    except Exception as e:
+        log_warn(f"Failed to cleanup process: {e}")
+
+
 def run_codex_process(codex_args, task_text: str, use_stdin: bool, timeout_sec: int):
     """
     启动 codex 子进程，处理 stdin / JSON 行输出和错误，成功时返回 (last_agent_message, thread_id)。
@@ -330,34 +350,73 @@ def run_codex_process(codex_args, task_text: str, use_stdin: bool, timeout_sec: 
             sys.exit(1)
 
         log_info("Reading stdout...")
+        verbose = os.environ.get('CODEX_VERBOSE', '').lower() in ('1', 'true', 'yes')
 
         for line in process.stdout:
             line = line.strip()
             if not line:
                 continue
 
+            # 详细模式：打印原始JSON（截断）
+            if verbose:
+                display = line[:500] + '...' if len(line) > 500 else line
+                log_info(f"RAW: {display}")
+
             try:
                 event = json.loads(line)
                 event_type = event.get('type', 'unknown')
+                item = event.get('item', {})
+                item_type = item.get('type', '')
 
-                # 打印事件类型作为进度提示
+                # 详细打印事件内容
                 if event_type == 'thread.started':
                     log_info(f"Event: {event_type}")
+                
                 elif event_type == 'item.started':
-                    item_type = event.get('item', {}).get('type', '')
                     log_info(f"Event: {event_type} ({item_type})")
+                
                 elif event_type == 'item.completed':
-                    item_type = event.get('item', {}).get('type', '')
                     log_info(f"Event: {event_type} ({item_type})")
+                    
+                    # 打印命令执行详情
+                    if item_type == 'command_execution':
+                        cmd = item.get('command', '')
+                        exit_code = item.get('exit_code', '')
+                        if cmd:
+                            # 截断过长命令
+                            cmd_display = cmd[:200] + '...' if len(cmd) > 200 else cmd
+                            log_info(f"  CMD: {cmd_display}")
+                        if exit_code is not None:
+                            log_info(f"  EXIT: {exit_code}")
+                    
+                    # 打印文件操作详情
+                    elif item_type == 'file_write':
+                        filepath = item.get('path', '')
+                        if filepath:
+                            log_info(f"  WRITE: {filepath}")
+                    
+                    elif item_type == 'file_read':
+                        filepath = item.get('path', '')
+                        if filepath:
+                            log_info(f"  READ: {filepath}")
+                    
+                    # 打印 agent_message 摘要
+                    elif item_type == 'agent_message':
+                        text = normalize_text(item.get('text'))
+                        if text:
+                            # 显示前100字符作为摘要
+                            summary = text[:100].replace('\n', ' ')
+                            if len(text) > 100:
+                                summary += '...'
+                            log_info(f"  MSG: {summary}")
 
                 # 捕获 thread_id
                 if event_type == 'thread.started':
                     thread_id = event.get('thread_id')
 
                 # 捕获 agent_message
-                if (event_type == 'item.completed' and
-                    event.get('item', {}).get('type') == 'agent_message'):
-                    text = normalize_text(event['item'].get('text'))
+                if (event_type == 'item.completed' and item_type == 'agent_message'):
+                    text = normalize_text(item.get('text'))
                     if text:
                         last_agent_message = text
 
@@ -378,12 +437,7 @@ def run_codex_process(codex_args, task_text: str, use_stdin: bool, timeout_sec: 
 
     except subprocess.TimeoutExpired:
         log_error('Codex execution timeout')
-        if process is not None:
-            process.kill()
-            try:
-                process.wait(timeout=FORCE_KILL_DELAY)
-            except subprocess.TimeoutExpired:
-                pass
+        _cleanup_process(process)
         sys.exit(124)
 
     except FileNotFoundError:
@@ -392,13 +446,14 @@ def run_codex_process(codex_args, task_text: str, use_stdin: bool, timeout_sec: 
 
     except KeyboardInterrupt:
         log_error("Codex interrupted by user")
-        if process is not None:
-            process.terminate()
-            try:
-                process.wait(timeout=FORCE_KILL_DELAY)
-            except subprocess.TimeoutExpired:
-                process.kill()
+        _cleanup_process(process)
         sys.exit(130)
+
+    except Exception as e:
+        # 捕获所有其他异常（如 UnicodeDecodeError, BrokenPipeError 等）
+        log_error(f"Unexpected error: {type(e).__name__}: {e}")
+        _cleanup_process(process)
+        sys.exit(1)
 
 
 def main():
