@@ -17,9 +17,42 @@ class GitError(Exception):
         self.stderr = stderr
 
 
-def _run_git(args: list, cwd: Path, check: bool = True) -> Tuple[int, str, str]:
+def _find_git_root(cwd: Path) -> Optional[Path]:
+    """Find the .git directory root."""
+    current = cwd.resolve()
+    while current != current.parent:
+        git_dir = current / ".git"
+        if git_dir.is_dir():
+            return git_dir
+        current = current.parent
+    return None
+
+
+def _clear_index_lock(cwd: Path) -> bool:
+    """
+    Remove index.lock if it exists.
+    Returns True if lock was removed.
+    """
+    git_dir = _find_git_root(cwd)
+    if not git_dir:
+        return False
+    
+    lock_file = git_dir / "index.lock"
+    if lock_file.exists():
+        try:
+            lock_file.unlink()
+            return True
+        except OSError:
+            return False
+    return False
+
+
+def _run_git(args: list, cwd: Path, check: bool = True, retry_on_lock: bool = True) -> Tuple[int, str, str]:
     """
     Execute a git command.
+    
+    If retry_on_lock is True and the command fails due to index.lock,
+    automatically remove the lock file and retry once.
     
     Returns:
         (returncode, stdout, stderr)
@@ -33,6 +66,20 @@ def _run_git(args: list, cwd: Path, check: bool = True) -> Tuple[int, str, str]:
             text=True,
             timeout=60
         )
+        
+        # Check for index.lock error and retry
+        if result.returncode != 0 and retry_on_lock:
+            if "index.lock" in result.stderr:
+                if _clear_index_lock(cwd):
+                    # Retry once after clearing lock
+                    result = subprocess.run(
+                        cmd,
+                        cwd=str(cwd),
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+        
         return result.returncode, result.stdout.strip(), result.stderr.strip()
     except subprocess.TimeoutExpired:
         raise GitError(f"Git command timed out: {' '.join(cmd)}")

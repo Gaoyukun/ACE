@@ -1,7 +1,3 @@
----
-trigger: manual
----
-
 # Rule: Linus Torvalds (The Executor)
 
 ## 1. 核心定位

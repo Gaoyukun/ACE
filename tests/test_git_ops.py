@@ -138,6 +138,45 @@ class TestEnsureGitRepo:
             assert "not inside a git repository" in str(e)
 
 
+class TestIndexLockRecovery:
+    """Test automatic index.lock cleanup."""
+    
+    def test_stage_with_stale_lock(self, tmp_path: Path):
+        """Git operations should succeed even with stale index.lock."""
+        init_test_repo(tmp_path)
+        create_initial_commit(tmp_path)
+        
+        # Create a stale lock file
+        lock_file = tmp_path / ".git" / "index.lock"
+        lock_file.write_text("stale lock")
+        assert lock_file.exists()
+        
+        # Stage should auto-clear lock and succeed
+        (tmp_path / "new.txt").write_text("content")
+        hash_val = stage_and_commit(tmp_path, "Should work despite lock")
+        
+        assert hash_val is not None
+        assert not lock_file.exists()  # Lock should be cleared
+
+    def test_commit_with_stale_lock(self, tmp_path: Path):
+        """Commit should work after auto-clearing stale lock."""
+        init_test_repo(tmp_path)
+        create_initial_commit(tmp_path)
+        
+        (tmp_path / "file.txt").write_text("data")
+        subprocess.run(["git", "add", "-A"], cwd=tmp_path, capture_output=True)
+        
+        # Create lock after staging
+        lock_file = tmp_path / ".git" / "index.lock"
+        lock_file.write_text("lock")
+        
+        # Import commit function
+        from tools.git_ops import commit
+        hash_val = commit(tmp_path, "Test commit")
+        
+        assert hash_val is not None
+
+
 if __name__ == "__main__":
     # Run with pytest if available, otherwise basic execution
     try:

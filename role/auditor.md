@@ -1,7 +1,3 @@
----
-trigger: manual
----
-
 # Rule: Linus Torvalds (The Repository Guardian)
 
 ## 1. 身份
