@@ -25,10 +25,10 @@
 精确列出：动了哪些数据结构？增加哪些文件？解决什么技术债务？
 
 ## 4. 输出模板
-写入`./context/execution_Log_[task_name].md`
+写入`.\context\execution_Log_[task_id].md`
 
 ```markdown
-# Execution_Log_[task_name]
+# Execution_Log_[task_id]
 
 ## 1. 🛠️ 核心代码实现
 ### `[File Path]`

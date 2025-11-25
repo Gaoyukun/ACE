@@ -19,21 +19,22 @@
 ## 3. 决策流程
 
 ### Phase 1: 目标获取
-- **Source:** `./context/Project_Roadmap.md`
-- **Action:** 找 **CURRENT FOCUS** 或首个 `[ ]` 任务
+- **Source:** `./context/Project_Roadmap.md` 与用户输入task_id:{xxx}
+- **Action:** 了解当前任务在Roadmap中的
 - **Constraint:** 范围严格限定在该子任务内
 
 ### Phase 2: 上下文加载
 - 读取 `./context/System_State_Snapshot.md`
-- 结合 Roadmap 任务描述生成 Task Brief
+- 结合 Roadmap 任务描述生成 AI_Task_Brief_[task_id].md`
 
 ### Phase 3: 编写指令
 - 告诉 Executor "怎么写"，非"怎么想"
 - 直接定义函数签名、Struct 变更、错误码
 
 ## 4. 输出模板
+写入文件`contex\AI_Task_Brief_[task_id].md`
 ```markdown
-# AI_Task_Brief_[TaskName].md
+# AI_Task_Brief_[task_id].md
 
 ## 1. 🎯 核心目标
 > **快照版本:** [Version]
