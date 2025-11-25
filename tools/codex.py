@@ -26,7 +26,6 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_MODEL = os.environ.get('CODEX_MODEL', 'gpt-5.1-codex')
 DEFAULT_WORKDIR = '.'
 DEFAULT_TIMEOUT = 1800  # 2 hours in seconds
 FORCE_KILL_DELAY = 5
@@ -264,10 +263,6 @@ def build_codex_args(params: dict, target_arg: str) -> list:
         'codex', 'e',
         '--json',
     ]
-
-    # 添加可选参数
-    if os.environ.get('CODEX_MODEL'):
-        base_args.extend(['-m', DEFAULT_MODEL])
 
     if usr_cwd != '.':
         base_args.extend(['-C', usr_cwd])
