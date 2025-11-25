@@ -1,0 +1,38 @@
+"你是 Linus。这是我们的新项目。 **终极目标:** {
+完成Orchestrator.py, 我的目标描述的流程可能不够健壮, 你可以自行发挥, 让过程更鲁邦, 总的来说, 调度三个AI角色, 用commit 记录每一轮的更改, 直到任务完成!!!! 最好别停, 但也别掩盖错误, 让我最终得到一坨狗屎.
+另外, 给我更清晰的, 更好用的cli interface. 尤其是脚本的输出,让我直到发生过什么, 正在发生什么!!
+
+目前项目中, 已有tools\codex.py 用来调用codex 干活.
+
+1. 明确两个目录, usr_cwd(用户call Orchestrator.py时通过arg指定的目录)和Orchestrator目录(Orchestrator.py所在目录)
+2. 修改Orchestrator目录\tools\codex.py:
+	1. 支持指定角色, 具体做法为, 加入 -role X 选项, 在Orchestrator目录\role文件夹下查找x.md, 如果不存在, 报错, 终止执行, 如果存在cp一份改名为AGENTS.md 并放置在usr_cwd, 替换掉原有的AGENTS.md
+	2. 支持usr_cwd, Orchestrator.py在调用\tools\codex.py时, 总是通过自己的usr_cwd指定codex.py 的usr_cwd.  codex.py为把usr_cwd传递给codex.
+3. 修改Orchestrator.py脚本, 创建工作流(cmd interface)
+	- 用户调用Orchestrator.py, 传入usr_cwd, requirement.
+	---
+	init部分
+	- 调用codex with auditor 角色, 传入usr_cwd, 传入命令:
+	- `` 你是 Linus。这是我们的新项目。 **终极目标:** [用户传入的需求]. 目前项目是空的。请初始化 `context\System_State_Snapshot.md`。 请基于终极目标，创建一个初步的 `context\Project_Roadmap.md`，将目标拆解并指定第一个任务。``
+	- 捕获codex输出的SESSION_ID: xxx , 记为auditor_session_id
+	- 检查`./context/current_task_id.txt`是否存在, 如存在读取`./context/current_task_id.txt` 获取task_id, 否则报错退出
+	- 使用git基于当前分支新建一个任务分支, 添加所有文件并提交,msg为:  task init. auditor_session_id:[auditor_session_id]
+	 --- 
+	 主循环
+	- 调用codex with commander 角色, 传入usr_cwd, 传入命令: task_id: [task_id]
+	- 捕获codex输出的SESSION_ID: xxx , 记为commander_session_id
+	- 检查`contex\AI_Task_Brief_[task_id].md`是否生成, 如果没生成, 报错并停止.
+	- 如果`contex\AI_Task_Brief_[task_id].md`已生成, 调用codex with executor 角色, 传入usr_cwd, 传入命令: task_id: [task_id].
+	- 捕获codex输出的SESSION_ID: xxx , 记为executor_session_id
+	- 检查`./context/execution_Log_[task_id].md`是否存在, 如果不存在, 报错并停止.
+	- 如果`./context/execution_Log_[task_id].md`存在, 调用codex with auditor 角色, 传入usr_cwd, 传入命令: task_id: [task_id] 已被executor标记为完成, 请审查`./context/execution_Log_[task_id].md`, 并更新`./context/current_task_id.txt`, 如果任务完成, 写入`finish`至`./context/current_task_id.txt`中.
+	- 捕获codex输出的SESSION_ID: xxx , 记为auditor_session_id
+	- 检查`./context/current_task_id.txt`是否存在, 如存在读取`./context/current_task_id.txt` 获取task_id, 否则报错退出
+	- 检查读出的task_id是否为finish, 如果是, 正常退出, 醒目提示任务完成
+	- 使用git, 添加所有文件并提交,msg为:  
+		- task: [task_id]. 
+		- commander_session_id:[commander_session_id]
+		- auditor_session_id:[auditor_session_id]
+		- executor_session_id:[executor_session_id]
+	-  继续上面的循环, 直到任务完成或者退出.
+}
