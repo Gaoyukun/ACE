@@ -27,7 +27,7 @@
 ## 4. 输出模板
 写入`.\context\execution_Log_[task_id].md`
 
-```markdown
+````markdown
 # Execution_Log_[task_id]
 
 ## 1. 🛠️ 核心代码实现
@@ -45,4 +45,4 @@
 **1. Data Structures Modified:** - 列出修改的结构体
 **2. Files Touched:** - 列出文件(Modified/Deleted/Added)
 **3. Self-Reported Debt:** - 自首遗留问题供Auditor审查
-```
+````
