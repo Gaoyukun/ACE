@@ -3,10 +3,33 @@
 ACE Orchestrator - AI Collaboration Engine
 
 Drives a three-role workflow (auditor/commander/executor) to complete tasks,
-with git commits after each iteration until the task is finished.
+with git commits after each iteration until the task is finished or aborted.
+
+Stop Signals (from auditor via current_task_id.txt):
+    finish  - Project completed successfully (exit 0)
+    abort   - Project terminated by auditor (exit 1)
 
 Usage:
-    python Orchestrator.py --usr-cwd <project_dir> --requirement "Your goal here"
+    python Orchestrator.py (-i | -r) -d <project_dir> [-R <requirement>]
+
+Options:
+    -i, --init          Initialize a new project (requires -R)
+    -r, --resume        Resume an existing project
+    -d, --usr-cwd       Path to project directory (must be a git repo)
+    -R, --requirement   The ultimate goal / requirement (required for -i)
+    --branch-prefix     Prefix for task branches (default: task)
+    --max-iterations    Maximum iterations before stopping (default: 50)
+    -h, --help          Show this help message
+
+Examples:
+    # Start a new project:
+    python Orchestrator.py -i -d ./myproject -R "Build a REST API with user auth"
+
+    # Resume an existing project:
+    python Orchestrator.py -r -d ./myproject
+
+    # With custom branch prefix:
+    python Orchestrator.py -i -d ./myproject -R "Add login feature" --branch-prefix feature
 """
 import argparse
 import re
@@ -27,6 +50,7 @@ from tools.git_ops import (
     get_current_branch,
     stage_and_commit,
 )
+from tools.codex import set_log_dir
 
 # ============================================================================
 # Console Output Helpers
@@ -89,8 +113,14 @@ class Console:
     @classmethod
     def done(cls):
         print(f"\n{cls.GREEN}{'═' * 60}{cls.RESET}")
-        print(f"{cls.GREEN}{cls.BOLD}  ✓ ALL TASKS COMPLETED{cls.RESET}")
+        print(f"{cls.GREEN}{cls.BOLD}  ✓ ALL TASKS COMPLETED - PROJECT RELEASED{cls.RESET}")
         print(f"{cls.GREEN}{'═' * 60}{cls.RESET}\n", flush=True)
+    
+    @classmethod
+    def aborted(cls):
+        print(f"\n{cls.RED}{'═' * 60}{cls.RESET}")
+        print(f"{cls.RED}{cls.BOLD}  ✗ PROJECT ABORTED - TERMINATED BY AUDITOR{cls.RESET}")
+        print(f"{cls.RED}{'═' * 60}{cls.RESET}\n", flush=True)
 
 
 # ============================================================================
@@ -178,25 +208,36 @@ def file_exists(usr_cwd: Path, relative_path: str) -> bool:
 # Workflow Phases
 # ============================================================================
 
-def phase_init(usr_cwd: Path, requirement: str, branch_prefix: str) -> Tuple[str, str, str]:
+def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, resume: bool = False) -> Tuple[str, str, str]:
     """
     Initialization phase:
-    1. Call auditor to initialize context files
+    1. Call auditor to initialize/resume context files
     2. Read task_id
     3. Create task branch and commit
     
     Returns:
         (task_id, branch_name, auditor_session_id)
     """
-    Console.phase("INITIALIZATION", "auditor")
+    Console.phase("INITIALIZATION" if not resume else "RESUME", "auditor")
     
-    init_task = (
-        f'你是 Linus。这是我们的新项目。\n'
-        f'**终极目标:** {requirement}\n\n'
-        f'目前项目是空的。请初始化 `context/System_State_Snapshot.md`。\n'
-        f'请基于终极目标，创建一个初步的 `context/Project_Roadmap.md`，'
-        f'将目标拆解并指定第一个任务。'
-    )
+    if resume:
+        # Resume mode: ask auditor to review existing context and continue
+        init_task = (
+            f'你是 Linus。这是一个已存在的项目，我们需要继续之前的工作。\n\n'
+            f'请阅读 `./context/System_State_Snapshot.md` 和 `./context/Project_Roadmap.md`，\n'
+            f'了解当前项目状态和进度。\n\n'
+            f'然后检查 `./context/current_task_id.txt`，确认当前任务。\n'
+            f'如果需要，更新 Snapshot 和 Roadmap，然后设置下一个要执行的 task_id。'
+        )
+    else:
+        # Init mode: start fresh project
+        init_task = (
+            f'你是 Linus。这是我们的新项目。\n'
+            f'**终极目标:** {requirement}\n\n'
+            f'目前项目是空的。请初始化 `context/System_State_Snapshot.md`。\n'
+            f'请基于终极目标，创建一个初步的 `context/Project_Roadmap.md`，'
+            f'将目标拆解并指定第一个任务。'
+        )
     
     output, session_id = invoke_codex("auditor", usr_cwd, init_task)
     
@@ -209,21 +250,21 @@ def phase_init(usr_cwd: Path, requirement: str, branch_prefix: str) -> Tuple[str
     if not task_id:
         Console.fatal("Missing context/current_task_id.txt after auditor init")
     
-    Console.success(f"Got initial task_id: {task_id}")
+    Console.success(f"Got task_id: {task_id}")
     
-    # Create task branch
+    # Always create new task branch (both init and resume)
     base_branch = get_current_branch(usr_cwd)
     branch_name = f"{branch_prefix}/{task_id}"
     actual_branch = create_branch(usr_cwd, branch_name)
     Console.info(f"Created branch: {actual_branch} (from {base_branch})")
     
-    # Initial commit
-    commit_msg = f"task init. auditor_session_id:{session_id}"
+    # Commit
+    commit_msg = f"task {'resume' if resume else 'init'}. auditor_session_id:{session_id}"
     commit_hash = stage_and_commit(usr_cwd, commit_msg)
     if commit_hash:
-        Console.success(f"Initial commit: {commit_hash[:8]}")
+        Console.success(f"{'Resume' if resume else 'Initial'} commit: {commit_hash[:8]}")
     else:
-        Console.warn("Nothing to commit on init")
+        Console.warn("Nothing to commit")
     
     return task_id, actual_branch, session_id
 
@@ -270,7 +311,7 @@ def phase_executor(usr_cwd: Path, task_id: str) -> str:
         session_id = "unknown"
     
     # Check log file exists
-    log_path = f"context/execution_Log_{task_id}.md"
+    log_path = f"context/Execution_Log_{task_id}.md"
     if not file_exists(usr_cwd, log_path):
         Console.fatal(f"Executor failed to generate {log_path}")
     
@@ -289,7 +330,7 @@ def phase_auditor_review(usr_cwd: Path, task_id: str) -> str:
     
     task = (
         f"task_id: {task_id} 已被executor标记为完成。\n"
-        f"请审查 `./context/execution_Log_{task_id}.md`，\n"
+        f"请审查 `./context/Execution_Log_{task_id}.md`，\n"
         f"并更新 `./context/current_task_id.txt`。\n"
         f"如果所有任务完成，写入 `finish` 至 `./context/current_task_id.txt` 中。"
     )
@@ -334,9 +375,10 @@ def commit_iteration(
 
 def run_orchestration(
     usr_cwd: Path,
-    requirement: str,
+    requirement: Optional[str],
     branch_prefix: str = "task",
-    max_iterations: int = 50
+    max_iterations: int = 50,
+    resume: bool = False
 ):
     """
     Main orchestration loop.
@@ -346,7 +388,12 @@ def run_orchestration(
     """
     Console.banner("ACE ORCHESTRATOR STARTING")
     Console.info(f"Project: {usr_cwd}")
-    Console.info(f"Requirement: {requirement[:100]}{'...' if len(requirement) > 100 else ''}")
+    Console.info(f"Mode: {'RESUME' if resume else 'INIT'}")
+    
+    # 设置日志目录为用户项目目录
+    set_log_dir(usr_cwd)
+    if requirement:
+        Console.info(f"Requirement: {requirement[:100]}{'...' if len(requirement) > 100 else ''}")
     
     # Ensure git repo
     try:
@@ -359,7 +406,7 @@ def run_orchestration(
     context_dir.mkdir(exist_ok=True)
     
     # Init phase
-    task_id, branch, init_auditor_sid = phase_init(usr_cwd, requirement, branch_prefix)
+    task_id, branch, init_auditor_sid = phase_init(usr_cwd, requirement, branch_prefix, resume)
     
     # Main loop
     iteration = 0
@@ -384,11 +431,20 @@ def run_orchestration(
         if not new_task_id:
             Console.fatal("current_task_id.txt is missing or empty after auditor review")
         
-        if new_task_id.lower() == "finish":
+        # Check for stop signals
+        signal = new_task_id.lower()
+        if signal == "finish":
             Console.done()
-            Console.info(f"Completed in {iteration} iteration(s)")
+            Console.info(f"🎉 Project released in {iteration} iteration(s)")
             Console.info(f"Branch: {branch}")
             return
+        
+        if signal == "abort":
+            Console.aborted()
+            Console.info(f"💀 Project killed after {iteration} iteration(s)")
+            Console.info(f"Branch: {branch}")
+            Console.warn("Check Project_Roadmap.md for termination reason")
+            sys.exit(1)
         
         if new_task_id == task_id:
             Console.warn(f"Task ID unchanged ({task_id}), auditor may have stalled")
@@ -408,23 +464,37 @@ def parse_cli_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="ACE Orchestrator - Drive AI collaboration to complete tasks",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python Orchestrator.py --usr-cwd ./myproject --requirement "Build a REST API"
-  python Orchestrator.py --usr-cwd D:\\Projects\\demo --requirement "Implement login" --branch-prefix feature
+        epilog="""\nExamples:
+  # Start new project:
+  python Orchestrator.py -i -d ./myproject -R "Build a REST API"
+  
+  # Resume existing project:
+  python Orchestrator.py -r -d ./myproject
         """
     )
     
+    # Mode selection (mutually exclusive, required)
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument(
+        "--init", "-i",
+        action="store_true",
+        help="Initialize a new project (requires --requirement)"
+    )
+    mode_group.add_argument(
+        "--resume", "-r",
+        action="store_true",
+        help="Resume an existing project (reads context files)"
+    )
+    
     parser.add_argument(
-        "--usr-cwd",
+        "--usr-cwd", "-d",
         required=True,
         help="Path to the user project directory (must be a git repo)"
     )
     
     parser.add_argument(
-        "--requirement", "-r",
-        required=True,
-        help="The ultimate goal / requirement to achieve"
+        "--requirement", "-R",
+        help="The ultimate goal / requirement (required for --init)"
     )
     
     parser.add_argument(
@@ -440,7 +510,13 @@ Examples:
         help="Maximum iterations before giving up (default: 50)"
     )
     
-    return parser.parse_args()
+    args = parser.parse_args()
+    
+    # Validate: --init requires --requirement
+    if args.init and not args.requirement:
+        parser.error("--init requires --requirement")
+    
+    return args
 
 
 def main():
@@ -458,7 +534,8 @@ def main():
             usr_cwd=usr_cwd,
             requirement=args.requirement,
             branch_prefix=args.branch_prefix,
-            max_iterations=args.max_iterations
+            max_iterations=args.max_iterations,
+            resume=args.resume
         )
     except GitError as e:
         Console.fatal(f"Git error: {e}")

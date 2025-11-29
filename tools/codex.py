@@ -23,6 +23,9 @@ import json
 import sys
 import os
 import shutil
+import logging
+import datetime
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -34,19 +37,128 @@ ORCHESTRATOR_ROOT = SCRIPT_DIR.parent
 ROLE_DIR = ORCHESTRATOR_ROOT / 'role'
 
 
+# ANSI 颜色码
+COLOR_RED = '\033[91m'
+COLOR_YELLOW = '\033[93m'
+COLOR_RESET = '\033[0m'
+
+# 日志系统初始化
+_logger: Optional[logging.Logger] = None
+_log_file_path: Optional[Path] = None
+
+
+def _init_logger(log_dir: Optional[Path] = None, console_only: bool = False):
+    """Initialize logger with file and console handlers"""
+    global _logger, _log_file_path
+    
+    if _logger is not None:
+        return _logger
+    
+    _logger = logging.getLogger('ACE')
+    _logger.setLevel(logging.DEBUG)
+    _logger.handlers.clear()
+    
+    console_formatter = logging.Formatter('%(levelname)s: %(message)s')
+    
+    # Console handler - 输出到 stderr
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_formatter)
+    _logger.addHandler(console_handler)
+    
+    # 如果不是仅控制台模式，添加文件 handler
+    if not console_only and log_dir is not None:
+        _add_file_handler(log_dir)
+    
+    return _logger
+
+
+def _add_file_handler(log_dir: Path):
+    """Add file handler to existing logger"""
+    global _log_file_path
+    
+    if _logger is None:
+        return
+    
+    # 日志格式
+    file_formatter = logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    _log_file_path = log_dir / 'ACE.log'
+    
+    file_handler = logging.FileHandler(_log_file_path, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(file_formatter)
+    _logger.addHandler(file_handler)
+
+
+def set_log_dir(log_dir: Path):
+    """Set log directory (adds file handler if not already added)"""
+    global _log_file_path
+    
+    # 确保 logger 已初始化
+    if _logger is None:
+        _init_logger(log_dir)
+        return
+    
+    # 检查是否已有文件 handler
+    has_file_handler = any(
+        isinstance(h, logging.FileHandler) for h in _logger.handlers
+    )
+    
+    if not has_file_handler:
+        _add_file_handler(log_dir)
+        log_info(f"Log file: {_log_file_path}")
+
+
+def get_logger() -> logging.Logger:
+    """Get or create the ACE logger (console only until set_log_dir is called)"""
+    if _logger is None:
+        _init_logger(console_only=True)
+    return _logger
+
+
 def log_error(message: str):
-    """输出错误信息到 stderr"""
-    sys.stderr.write(f"ERROR: {message}\n")
+    """输出错误信息"""
+    get_logger().error(message)
 
 
 def log_warn(message: str):
-    """输出警告信息到 stderr"""
-    sys.stderr.write(f"WARN: {message}\n")
+    """输出警告信息"""
+    get_logger().warning(message)
 
 
 def log_info(message: str):
-    """输出信息到 stderr"""
-    sys.stderr.write(f"INFO: {message}\n")
+    """输出信息"""
+    get_logger().info(message)
+
+
+def log_debug(message: str):
+    """输出调试信息（仅写入文件）"""
+    get_logger().debug(message)
+
+
+def log_codex(message: str):
+    """输出 codex 命令信息（红色）"""
+    # Console 红色输出
+    sys.stderr.write(f"{COLOR_RED}codex {message}{COLOR_RESET}\n")
+    # 同时写入日志文件
+    get_logger().info(f"CODEX_CMD: codex {message}")
+
+
+def log_process_event(event_type: str, details: dict):
+    """记录进程事件到日志文件（详细调试信息）"""
+    log_debug(f"PROCESS_EVENT: {event_type} | {json.dumps(details, ensure_ascii=False)}")
+
+
+def log_subprocess_error(cmd: list, returncode: int, stderr_output: str = ''):
+    """记录子进程错误"""
+    msg = f"SUBPROCESS_ERROR: cmd={cmd}, returncode={returncode}"
+    if stderr_output:
+        msg += f", stderr={stderr_output[:500]}"
+    get_logger().error(msg)
 
 
 def resolve_timeout() -> int:
@@ -289,22 +401,40 @@ def find_codex_executable() -> str:
     return 'codex'
 
 
-def _cleanup_process(process: Optional[subprocess.Popen]):
-    """确保子进程被正确终止"""
+def _cleanup_process(process: Optional[subprocess.Popen], terminate: bool = True):
+    """确保子进程被正确终止并释放所有句柄"""
     if process is None:
         return
     
     try:
-        # 先尝试优雅终止
-        process.terminate()
-        try:
-            process.wait(timeout=FORCE_KILL_DELAY)
-            log_info(f"Process {process.pid} terminated gracefully")
-        except subprocess.TimeoutExpired:
-            # 强制杀死
-            process.kill()
-            process.wait(timeout=FORCE_KILL_DELAY)
-            log_info(f"Process {process.pid} killed forcefully")
+        # 关闭所有管道（释放句柄）
+        if process.stdin:
+            try:
+                process.stdin.close()
+            except Exception:
+                pass
+        if process.stdout:
+            try:
+                process.stdout.close()
+            except Exception:
+                pass
+        if process.stderr:
+            try:
+                process.stderr.close()
+            except Exception:
+                pass
+        
+        if terminate:
+            # 先尝试优雅终止
+            process.terminate()
+            try:
+                process.wait(timeout=FORCE_KILL_DELAY)
+                log_info(f"Process {process.pid} terminated gracefully")
+            except subprocess.TimeoutExpired:
+                # 强制杀死
+                process.kill()
+                process.wait(timeout=FORCE_KILL_DELAY)
+                log_info(f"Process {process.pid} killed forcefully")
     except Exception as e:
         log_warn(f"Failed to cleanup process: {e}")
 
@@ -325,7 +455,19 @@ def run_codex_process(codex_args, task_text: str, use_stdin: bool, timeout_sec: 
 
     try:
         # 启动 codex 子进程（文本模式管道）
-        log_info(f"Starting codex with args: {' '.join(codex_args[:5])}...")
+        log_codex(' '.join(codex_args))
+        log_debug(f"Full command args: {codex_args}")
+        
+        # 如果使用 stdin 模式，显示实际任务内容
+        if use_stdin:
+            task_preview = task_text[:200].replace('\n', ' ')
+            if len(task_text) > 200:
+                task_preview += '...'
+            log_info(f"TASK (via stdin): {task_preview}")
+        
+        log_debug("Creating subprocess...")
+        log_process_event("POPEN_START", {"args": codex_args, "use_stdin": use_stdin})
+        
         process = subprocess.Popen(
             codex_args,
             stdin=subprocess.PIPE if use_stdin else None,
@@ -334,15 +476,15 @@ def run_codex_process(codex_args, task_text: str, use_stdin: bool, timeout_sec: 
             text=True,
             bufsize=1,
         )
+        
         log_info(f"Process started with PID: {process.pid}")
+        log_process_event("POPEN_SUCCESS", {"pid": process.pid})
 
         # 如果使用 stdin 模式，写入任务到 stdin 并关闭
         if use_stdin and process.stdin is not None:
-            log_info(f"Writing {len(task_text)} chars to stdin...")
             process.stdin.write(task_text)
             process.stdin.flush()  # 强制刷新缓冲区，避免大任务死锁
             process.stdin.close()
-            log_info("Stdin closed")
 
         # 逐行解析 JSON 输出
         if process.stdout is None:
@@ -382,21 +524,46 @@ def run_codex_process(codex_args, task_text: str, use_stdin: bool, timeout_sec: 
                     if item_type == 'command_execution':
                         cmd = item.get('command', '')
                         exit_code = item.get('exit_code', '')
+                        # codex 使用 aggregated_output 字段存储命令输出
+                        output = item.get('aggregated_output') or item.get('output') or ''
+                        
                         if cmd:
-                            # 截断过长命令
-                            cmd_display = cmd[:200] + '...' if len(cmd) > 200 else cmd
+                            cmd_display = cmd[:300] + '...' if len(cmd) > 300 else cmd
                             log_info(f"  CMD: {cmd_display}")
                         if exit_code is not None:
                             log_info(f"  EXIT: {exit_code}")
+                        if output:
+                            # 显示输出（截断过长内容）
+                            output_lines = output.strip().split('\n')
+                            if len(output_lines) > 10:
+                                output_display = '\n'.join(output_lines[:10]) + f'\n... ({len(output_lines)-10} more lines)'
+                            else:
+                                output_display = output.strip()
+                            if len(output_display) > 500:
+                                output_display = output_display[:500] + '...'
+                            log_info(f"  OUTPUT:\n{output_display}")
+                    
+                    # 打印 reasoning 详情
+                    elif item_type == 'reasoning':
+                        # 尝试获取思考内容（可能的字段名）
+                        text = item.get('text') or item.get('content') or item.get('summary') or ''
+                        if isinstance(text, list):
+                            text = '\n'.join(str(t) for t in text)
+                        if text:
+                            # 显示前200字符
+                            summary = text[:200].replace('\n', ' ').strip()
+                            if len(text) > 200:
+                                summary += '...'
+                            log_info(f"  THINKING: {summary}")
                     
                     # 打印文件操作详情
-                    elif item_type == 'file_write':
-                        filepath = item.get('path', '')
+                    elif item_type in ('file_write', 'file_change'):
+                        filepath = item.get('path') or item.get('file') or ''
                         if filepath:
                             log_info(f"  WRITE: {filepath}")
                     
                     elif item_type == 'file_read':
-                        filepath = item.get('path', '')
+                        filepath = item.get('path') or item.get('file') or ''
                         if filepath:
                             log_info(f"  READ: {filepath}")
                     
@@ -404,9 +571,8 @@ def run_codex_process(codex_args, task_text: str, use_stdin: bool, timeout_sec: 
                     elif item_type == 'agent_message':
                         text = normalize_text(item.get('text'))
                         if text:
-                            # 显示前100字符作为摘要
-                            summary = text[:100].replace('\n', ' ')
-                            if len(text) > 100:
+                            summary = text[:150].replace('\n', ' ')
+                            if len(text) > 150:
                                 summary += '...'
                             log_info(f"  MSG: {summary}")
 
@@ -425,6 +591,10 @@ def run_codex_process(codex_args, task_text: str, use_stdin: bool, timeout_sec: 
 
         # 等待进程结束并检查退出码
         returncode = process.wait(timeout=timeout_sec)
+        
+        # 释放管道句柄（进程已结束，不需要terminate）
+        _cleanup_process(process, terminate=False)
+        
         if returncode != 0:
             log_error(f'Codex exited with status {returncode}')
             sys.exit(returncode)
@@ -437,21 +607,45 @@ def run_codex_process(codex_args, task_text: str, use_stdin: bool, timeout_sec: 
 
     except subprocess.TimeoutExpired:
         log_error('Codex execution timeout')
+        log_process_event("TIMEOUT", {"timeout_sec": timeout_sec})
         _cleanup_process(process)
         sys.exit(124)
 
-    except FileNotFoundError:
-        log_error("codex command not found in PATH")
+    except FileNotFoundError as e:
+        log_error(f"codex command not found in PATH: {e}")
+        log_process_event("FILE_NOT_FOUND", {"error": str(e)})
         sys.exit(127)
+
+    except OSError as e:
+        # 捕获 Windows 进程创建错误 (0xc0000142 等)
+        error_details = {
+            "type": type(e).__name__,
+            "errno": e.errno,
+            "winerror": getattr(e, 'winerror', None),
+            "strerror": e.strerror,
+            "filename": getattr(e, 'filename', None),
+            "message": str(e)
+        }
+        log_error(f"OS Error during process operation: {e}")
+        log_process_event("OS_ERROR", error_details)
+        _cleanup_process(process)
+        sys.exit(1)
 
     except KeyboardInterrupt:
         log_error("Codex interrupted by user")
+        log_process_event("KEYBOARD_INTERRUPT", {})
         _cleanup_process(process)
         sys.exit(130)
 
     except Exception as e:
         # 捕获所有其他异常（如 UnicodeDecodeError, BrokenPipeError 等）
+        error_details = {
+            "type": type(e).__name__,
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        }
         log_error(f"Unexpected error: {type(e).__name__}: {e}")
+        log_process_event("UNEXPECTED_ERROR", error_details)
         _cleanup_process(process)
         sys.exit(1)
 
@@ -461,6 +655,10 @@ def main():
     params = parse_args()
     usr_cwd_path = resolve_usr_cwd(params.get('usr_cwd', DEFAULT_WORKDIR))
     params['usr_cwd'] = str(usr_cwd_path)
+    
+    # 设置日志目录为用户项目目录
+    set_log_dir(usr_cwd_path)
+    
     log_info(
         f"Parsed args: mode={params['mode']}, task_len={len(params['task'])}, "
         f"usr_cwd={usr_cwd_path}, role={params.get('role') or 'none'}"
