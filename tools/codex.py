@@ -197,12 +197,17 @@ def parse_args():
     instructions = None
     role = None
     usr_cwd_override: Optional[str] = None
+    yolo = False
 
     args = sys.argv[1:]
     positional = []
     i = 0
     while i < len(args):
         arg = args[i]
+        if arg == '--yolo':
+            yolo = True
+            i += 1
+            continue
         if arg in ('--instructions', '-i'):
             if i + 1 >= len(args):
                 log_error('--instructions requires a path argument')
@@ -245,7 +250,8 @@ def parse_args():
             'task': positional[2],
             'usr_cwd': usr_cwd,
             'instructions': instructions,
-            'role': role
+            'role': role,
+            'yolo': yolo
         }
 
     workdir = positional[1] if len(positional) > 1 else DEFAULT_WORKDIR
@@ -255,7 +261,8 @@ def parse_args():
         'task': positional[0],
         'usr_cwd': usr_cwd,
         'instructions': instructions,
-        'role': role
+        'role': role,
+        'yolo': yolo
     }
 
 
@@ -381,9 +388,9 @@ def build_codex_args(params: dict, target_arg: str) -> list:
 
     # instructions 通过 task 文本传递，不作为命令行参数
 
-    # 添加 full-auto 模式（如果设置了环境变量）
-    if os.environ.get('CODEX_FULL_AUTO'):
-        base_args.append('--full-auto')
+    # 添加 full-auto 模式（如果设置了环境变量或 --yolo 参数）
+    if params.get('yolo'):
+        base_args.append('--yolo')
 
     base_args.append(target_arg)
     return base_args

@@ -17,19 +17,30 @@ Options:
     -r, --resume        Resume an existing project
     -d, --usr-cwd       Path to project directory (must be a git repo)
     -R, --requirement   The ultimate goal / requirement (required for -i)
+    --yolo              Enable YOLO mode [default: on]
+    --no-yolo           Disable YOLO mode (require confirmation)
+    -s, --step          Step mode: pause for feedback [default: on]
+    --no-step           Disable step mode (run continuously)
+    -b, --new-branch    Create a new branch for the task [default: off]
     --branch-prefix     Prefix for task branches (default: task)
     --max-iterations    Maximum iterations before stopping (default: 50)
     -h, --help          Show this help message
 
 Examples:
-    # Start a new project:
+    # Start a new project (YOLO + step mode enabled by default):
     python Orchestrator.py -i -d ./myproject -R "Build a REST API with user auth"
 
     # Resume an existing project:
     python Orchestrator.py -r -d ./myproject
 
-    # With custom branch prefix:
-    python Orchestrator.py -i -d ./myproject -R "Add login feature" --branch-prefix feature
+    # Run continuously without pausing:
+    python Orchestrator.py -i -d ./myproject -R "Build API" --no-step
+
+    # Require command confirmation:
+    python Orchestrator.py -i -d ./myproject -R "Build API" --no-yolo
+
+    # Create a new branch for the task:
+    python Orchestrator.py -i -d ./myproject -R "Build API" -b
 """
 import argparse
 import re
@@ -127,20 +138,26 @@ class Console:
 # Codex Invocation
 # ============================================================================
 
+MAX_CODEX_RETRIES = 3
+RETRY_DELAY_SECONDS = 5
+
+
 def invoke_codex(
     role: str,
     usr_cwd: Path,
     task: str,
-    timeout: int = 1800
+    timeout: int = 1800,
+    max_retries: int = MAX_CODEX_RETRIES,
+    yolo: bool = False
 ) -> Tuple[str, Optional[str]]:
     """
-    Invoke codex.py with a specific role and task.
+    Invoke codex.py with a specific role and task, with automatic retry on failure.
     
     Returns:
         (output_text, session_id) - session_id may be None if not captured
     
     Raises:
-        RuntimeError on codex failure
+        RuntimeError on codex failure after all retries exhausted
     """
     codex_script = SCRIPT_DIR / "tools" / "codex.py"
     
@@ -149,41 +166,63 @@ def invoke_codex(
         str(codex_script),
         "--role", role,
         "--usr-cwd", str(usr_cwd),
-        task
     ]
+    if yolo:
+        cmd.append("--yolo")
+    cmd.append(task)
     
     Console.info(f"Running codex: role={role}")
     Console.info(f"Task: {task[:80]}{'...' if len(task) > 80 else ''}")
     
-    try:
-        # Use Popen to stream stderr in real-time while capturing stdout
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=None,  # stderr goes directly to console (real-time)
-            text=True,
-            cwd=str(SCRIPT_DIR)
-        )
+    last_error = None
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            if attempt > 1:
+                Console.warn(f"Retry attempt {attempt}/{max_retries}...")
+                time.sleep(RETRY_DELAY_SECONDS)
+            
+            # Use Popen to stream stderr in real-time while capturing stdout
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=None,  # stderr goes directly to console (real-time)
+                text=True,
+                cwd=str(SCRIPT_DIR)
+            )
+            
+            stdout, _ = process.communicate(timeout=timeout)
+            
+            if process.returncode != 0:
+                last_error = RuntimeError(f"codex exited with code {process.returncode}")
+                Console.error(f"Codex failed (exit {process.returncode})")
+                continue  # Retry
+            
+            output = stdout.strip()
+            
+            # Extract SESSION_ID from output
+            session_id = None
+            match = re.search(r'SESSION_ID:\s*(\S+)', output)
+            if match:
+                session_id = match.group(1)
+                Console.info(f"Captured SESSION_ID: {session_id}")
+            
+            return output, session_id
+            
+        except subprocess.TimeoutExpired:
+            process.kill()
+            last_error = RuntimeError(f"codex timed out after {timeout}s")
+            Console.error(f"Codex timeout ({timeout}s)")
+            continue  # Retry
         
-        stdout, _ = process.communicate(timeout=timeout)
-        
-        if process.returncode != 0:
-            raise RuntimeError(f"codex exited with code {process.returncode}")
-        
-        output = stdout.strip()
-        
-        # Extract SESSION_ID from output
-        session_id = None
-        match = re.search(r'SESSION_ID:\s*(\S+)', output)
-        if match:
-            session_id = match.group(1)
-            Console.info(f"Captured SESSION_ID: {session_id}")
-        
-        return output, session_id
-        
-    except subprocess.TimeoutExpired:
-        process.kill()
-        raise RuntimeError(f"codex timed out after {timeout}s")
+        except Exception as e:
+            last_error = RuntimeError(f"codex error: {e}")
+            Console.error(f"Codex error: {e}")
+            continue  # Retry
+    
+    # All retries exhausted
+    Console.error(f"Codex failed after {max_retries} attempts")
+    raise last_error
 
 
 # ============================================================================
@@ -208,7 +247,7 @@ def file_exists(usr_cwd: Path, relative_path: str) -> bool:
 # Workflow Phases
 # ============================================================================
 
-def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, resume: bool = False) -> Tuple[str, str, str]:
+def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, resume: bool = False, yolo: bool = False, new_branch: bool = False) -> Tuple[str, str, str]:
     """
     Initialization phase:
     1. Call auditor to initialize/resume context files
@@ -239,7 +278,7 @@ def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, re
             f'将目标拆解并指定第一个任务。'
         )
     
-    output, session_id = invoke_codex("auditor", usr_cwd, init_task)
+    output, session_id = invoke_codex("auditor", usr_cwd, init_task, yolo=yolo)
     
     if not session_id:
         Console.warn("No SESSION_ID captured from auditor init")
@@ -252,11 +291,15 @@ def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, re
     
     Console.success(f"Got task_id: {task_id}")
     
-    # Always create new task branch (both init and resume)
-    base_branch = get_current_branch(usr_cwd)
-    branch_name = f"{branch_prefix}/{task_id}"
-    actual_branch = create_branch(usr_cwd, branch_name)
-    Console.info(f"Created branch: {actual_branch} (from {base_branch})")
+    # Optionally create new task branch
+    if new_branch:
+        base_branch = get_current_branch(usr_cwd)
+        branch_name = f"{branch_prefix}/{task_id}"
+        actual_branch = create_branch(usr_cwd, branch_name)
+        Console.info(f"Created branch: {actual_branch} (from {base_branch})")
+    else:
+        actual_branch = get_current_branch(usr_cwd)
+        Console.info(f"Using current branch: {actual_branch}")
     
     # Commit
     commit_msg = f"task {'resume' if resume else 'init'}. auditor_session_id:{session_id}"
@@ -269,7 +312,7 @@ def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, re
     return task_id, actual_branch, session_id
 
 
-def phase_commander(usr_cwd: Path, task_id: str) -> str:
+def phase_commander(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     """
     Commander phase: generate AI_Task_Brief_<task_id>.md
     
@@ -279,7 +322,7 @@ def phase_commander(usr_cwd: Path, task_id: str) -> str:
     Console.phase(f"COMMANDER for Task: {task_id}", "commander")
     
     task = f"task_id: {task_id}"
-    output, session_id = invoke_codex("commander", usr_cwd, task)
+    output, session_id = invoke_codex("commander", usr_cwd, task, yolo=yolo)
     
     if not session_id:
         Console.warn("No SESSION_ID from commander")
@@ -294,7 +337,7 @@ def phase_commander(usr_cwd: Path, task_id: str) -> str:
     return session_id
 
 
-def phase_executor(usr_cwd: Path, task_id: str) -> str:
+def phase_executor(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     """
     Executor phase: execute task and generate execution_Log_<task_id>.md
     
@@ -304,7 +347,7 @@ def phase_executor(usr_cwd: Path, task_id: str) -> str:
     Console.phase(f"EXECUTOR for Task: {task_id}", "executor")
     
     task = f"task_id: {task_id}"
-    output, session_id = invoke_codex("executor", usr_cwd, task)
+    output, session_id = invoke_codex("executor", usr_cwd, task, yolo=yolo)
     
     if not session_id:
         Console.warn("No SESSION_ID from executor")
@@ -319,7 +362,7 @@ def phase_executor(usr_cwd: Path, task_id: str) -> str:
     return session_id
 
 
-def phase_auditor_review(usr_cwd: Path, task_id: str) -> str:
+def phase_auditor_review(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     """
     Auditor review phase: review execution log and update current_task_id
     
@@ -335,7 +378,21 @@ def phase_auditor_review(usr_cwd: Path, task_id: str) -> str:
         f"如果所有任务完成，写入 `finish` 至 `./context/current_task_id.txt` 中。"
     )
     
-    output, session_id = invoke_codex("auditor", usr_cwd, task)
+    # Check for user feedback from step mode
+    feedback_file = usr_cwd / "context" / "user_feedback.txt"
+    if feedback_file.exists():
+        user_feedback = feedback_file.read_text(encoding="utf-8").strip()
+        if user_feedback:
+            task += (
+                f"\n\n**⚠️ 用户反馈 (User Feedback):**\n"
+                f"{user_feedback}\n\n"
+                f"请在审查时考虑用户的反馈意见，并在下一轮任务中体现这些修改。"
+            )
+            Console.info(f"Including user feedback: {user_feedback[:50]}...")
+        # Clear feedback file after reading
+        feedback_file.unlink()
+    
+    output, session_id = invoke_codex("auditor", usr_cwd, task, yolo=yolo)
     
     if not session_id:
         Console.warn("No SESSION_ID from auditor review")
@@ -373,18 +430,42 @@ def commit_iteration(
 # Main Orchestration Loop
 # ============================================================================
 
+def prompt_user_feedback() -> Optional[str]:
+    """
+    Prompt user for feedback in step mode.
+    
+    Returns:
+        User feedback string, or None if user wants to continue without feedback.
+        Empty string means user pressed Enter without input (continue).
+    """
+    Console.step("Step mode: Iteration complete. Enter feedback or press Enter to continue:")
+    print(f"{Console.CYAN}(Type 'q' to quit, or enter your feedback){Console.RESET}")
+    try:
+        feedback = input(f"{Console.YELLOW}> {Console.RESET}").strip()
+        if feedback.lower() == 'q':
+            return None  # Signal to quit
+        return feedback
+    except EOFError:
+        return None
+
+
 def run_orchestration(
     usr_cwd: Path,
     requirement: Optional[str],
     branch_prefix: str = "task",
     max_iterations: int = 50,
-    resume: bool = False
+    resume: bool = False,
+    yolo: bool = False,
+    step: bool = False,
+    new_branch: bool = False
 ):
     """
     Main orchestration loop.
     
     Runs the init phase, then iterates commander -> executor -> auditor
     until task_id becomes 'finish' or max iterations reached.
+    
+    If step=True, pauses after each iteration for user feedback.
     """
     Console.banner("ACE ORCHESTRATOR STARTING")
     Console.info(f"Project: {usr_cwd}")
@@ -406,7 +487,7 @@ def run_orchestration(
     context_dir.mkdir(exist_ok=True)
     
     # Init phase
-    task_id, branch, init_auditor_sid = phase_init(usr_cwd, requirement, branch_prefix, resume)
+    task_id, branch, init_auditor_sid = phase_init(usr_cwd, requirement, branch_prefix, resume, yolo, new_branch)
     
     # Main loop
     iteration = 0
@@ -415,13 +496,13 @@ def run_orchestration(
         Console.banner(f"ITERATION {iteration} - Task: {task_id}")
         
         # Commander
-        commander_sid = phase_commander(usr_cwd, task_id)
+        commander_sid = phase_commander(usr_cwd, task_id, yolo)
         
         # Executor
-        executor_sid = phase_executor(usr_cwd, task_id)
+        executor_sid = phase_executor(usr_cwd, task_id, yolo)
         
         # Auditor review
-        auditor_sid = phase_auditor_review(usr_cwd, task_id)
+        auditor_sid = phase_auditor_review(usr_cwd, task_id, yolo)
         
         # Commit
         commit_iteration(usr_cwd, task_id, commander_sid, executor_sid, auditor_sid)
@@ -451,6 +532,18 @@ def run_orchestration(
         
         task_id = new_task_id
         Console.info(f"Next task: {task_id}")
+        
+        # Step mode: pause for user feedback
+        if step:
+            user_feedback = prompt_user_feedback()
+            if user_feedback is None:
+                Console.info("User requested quit")
+                return
+            if user_feedback:
+                # Store feedback for next auditor review
+                feedback_file = usr_cwd / "context" / "user_feedback.txt"
+                feedback_file.write_text(user_feedback, encoding="utf-8")
+                Console.info(f"Feedback saved: {user_feedback[:50]}{'...' if len(user_feedback) > 50 else ''}")
     
     Console.error(f"Max iterations ({max_iterations}) reached without completion")
     sys.exit(1)
@@ -465,11 +558,17 @@ def parse_cli_args() -> argparse.Namespace:
         description="ACE Orchestrator - Drive AI collaboration to complete tasks",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\nExamples:
-  # Start new project:
+  # Start new project (YOLO + step mode on by default):
   python Orchestrator.py -i -d ./myproject -R "Build a REST API"
   
   # Resume existing project:
   python Orchestrator.py -r -d ./myproject
+  
+  # Run continuously without pausing:
+  python Orchestrator.py -i -d ./myproject -R "Build API" --no-step
+  
+  # Create a new branch for the task:
+  python Orchestrator.py -i -d ./myproject -R "Build API" -b
         """
     )
     
@@ -510,6 +609,39 @@ def parse_cli_args() -> argparse.Namespace:
         help="Maximum iterations before giving up (default: 50)"
     )
     
+    parser.add_argument(
+        "--yolo",
+        action="store_true",
+        default=True,
+        help="Enable YOLO mode (auto-approve all codex commands) [default: True]"
+    )
+    parser.add_argument(
+        "--no-yolo",
+        action="store_false",
+        dest="yolo",
+        help="Disable YOLO mode (require confirmation for commands)"
+    )
+    
+    parser.add_argument(
+        "--step", "-s",
+        action="store_true",
+        default=True,
+        help="Step mode: pause after each iteration for user feedback [default: True]"
+    )
+    parser.add_argument(
+        "--no-step",
+        action="store_false",
+        dest="step",
+        help="Disable step mode (run continuously)"
+    )
+    
+    parser.add_argument(
+        "--new-branch", "-b",
+        action="store_true",
+        default=False,
+        help="Create a new branch for the task [default: False]"
+    )
+    
     args = parser.parse_args()
     
     # Validate: --init requires --requirement
@@ -535,7 +667,10 @@ def main():
             requirement=args.requirement,
             branch_prefix=args.branch_prefix,
             max_iterations=args.max_iterations,
-            resume=args.resume
+            resume=args.resume,
+            yolo=args.yolo,
+            step=args.step,
+            new_branch=args.new_branch
         )
     except GitError as e:
         Console.fatal(f"Git error: {e}")
