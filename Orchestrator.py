@@ -16,7 +16,7 @@ Options:
     -i, --init          Initialize a new project (requires -R)
     -r, --resume        Resume an existing project
     -d, --usr-cwd       Path to project directory (must be a git repo)
-    -R, --requirement   The ultimate goal / requirement (required for -i)
+    -R, --requirement   Goal (required for -i) or new instructions (for -r)
     --yolo              Enable YOLO mode [default: on]
     --no-yolo           Disable YOLO mode (require confirmation)
     -s, --step          Step mode: pause for feedback [default: on]
@@ -32,6 +32,9 @@ Examples:
 
     # Resume an existing project:
     python Orchestrator.py -r -d ./myproject
+
+    # Resume with new instructions (override/adjust goals):
+    python Orchestrator.py -r -d ./myproject -R "新目标: 修复编译环境"
 
     # Run continuously without pausing:
     python Orchestrator.py -i -d ./myproject -R "Build API" --no-step
@@ -268,6 +271,11 @@ def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, re
             f'然后检查 `./context/current_task_id.txt`，确认当前任务。\n'
             f'如果需要，更新 Snapshot 和 Roadmap，然后设置下一个要执行的 task_id。'
         )
+        if requirement:
+            init_task += (
+                f'\n\n**⚠️ 用户新指令:**\n{requirement}\n\n'
+                f'请根据以上指令调整项目目标和任务规划。'
+            )
     else:
         # Init mode: start fresh project
         init_task = (
@@ -406,15 +414,13 @@ def commit_iteration(
     usr_cwd: Path,
     task_id: str,
     commander_sid: str,
-    executor_sid: str,
-    auditor_sid: str
+    executor_sid: str
 ) -> Optional[str]:
-    """Commit changes after one iteration."""
+    """Commit changes after commander and executor phases."""
     commit_msg = (
         f"task: {task_id}\n"
         f"commander_session_id: {commander_sid}\n"
-        f"executor_session_id: {executor_sid}\n"
-        f"auditor_session_id: {auditor_sid}"
+        f"executor_session_id: {executor_sid}"
     )
     
     commit_hash = stage_and_commit(usr_cwd, commit_msg)
@@ -501,11 +507,23 @@ def run_orchestration(
         # Executor
         executor_sid = phase_executor(usr_cwd, task_id, yolo)
         
+        # Step mode: pause for user feedback before commit
+        if step:
+            user_feedback = prompt_user_feedback()
+            if user_feedback is None:
+                Console.info("User requested quit")
+                return
+            if user_feedback:
+                # Store feedback for auditor review
+                feedback_file = usr_cwd / "context" / "user_feedback.txt"
+                feedback_file.write_text(user_feedback, encoding="utf-8")
+                Console.info(f"Feedback saved: {user_feedback[:50]}{'...' if len(user_feedback) > 50 else ''}")
+        
+        # Commit (after user feedback, before auditor)
+        commit_iteration(usr_cwd, task_id, commander_sid, executor_sid)
+        
         # Auditor review
         auditor_sid = phase_auditor_review(usr_cwd, task_id, yolo)
-        
-        # Commit
-        commit_iteration(usr_cwd, task_id, commander_sid, executor_sid, auditor_sid)
         
         # Check completion
         new_task_id = read_task_id(usr_cwd)
@@ -532,18 +550,6 @@ def run_orchestration(
         
         task_id = new_task_id
         Console.info(f"Next task: {task_id}")
-        
-        # Step mode: pause for user feedback
-        if step:
-            user_feedback = prompt_user_feedback()
-            if user_feedback is None:
-                Console.info("User requested quit")
-                return
-            if user_feedback:
-                # Store feedback for next auditor review
-                feedback_file = usr_cwd / "context" / "user_feedback.txt"
-                feedback_file.write_text(user_feedback, encoding="utf-8")
-                Console.info(f"Feedback saved: {user_feedback[:50]}{'...' if len(user_feedback) > 50 else ''}")
     
     Console.error(f"Max iterations ({max_iterations}) reached without completion")
     sys.exit(1)

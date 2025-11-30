@@ -465,12 +465,16 @@ def run_codex_process(codex_args, task_text: str, use_stdin: bool, timeout_sec: 
         log_codex(' '.join(codex_args))
         log_debug(f"Full command args: {codex_args}")
         
-        # 如果使用 stdin 模式，显示实际任务内容
-        if use_stdin:
-            task_preview = task_text[:200].replace('\n', ' ')
-            if len(task_text) > 200:
-                task_preview += '...'
-            log_info(f"TASK (via stdin): {task_preview}")
+        # 完整显示实际任务内容（带颜色区分）- 输出到 stderr 以便实时显示
+        MAGENTA = '\033[35m'
+        CYAN = '\033[36m'
+        RESET = '\033[0m'
+        BOLD = '\033[1m'
+        print(f"\n{MAGENTA}{'─' * 60}{RESET}", file=sys.stderr)
+        print(f"{MAGENTA}{BOLD}📋 PROMPT TO CODEX:{RESET}", file=sys.stderr)
+        print(f"{MAGENTA}{'─' * 60}{RESET}", file=sys.stderr)
+        print(f"{CYAN}{task_text}{RESET}", file=sys.stderr)
+        print(f"{MAGENTA}{'─' * 60}{RESET}\n", file=sys.stderr, flush=True)
         
         log_debug("Creating subprocess...")
         log_process_event("POPEN_START", {"args": codex_args, "use_stdin": use_stdin})
