@@ -309,14 +309,7 @@ def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, re
         actual_branch = get_current_branch(usr_cwd)
         Console.info(f"Using current branch: {actual_branch}")
     
-    # Commit
-    commit_msg = f"task {'resume' if resume else 'init'}. auditor_session_id:{session_id}"
-    commit_hash = stage_and_commit(usr_cwd, commit_msg)
-    if commit_hash:
-        Console.success(f"{'Resume' if resume else 'Initial'} commit: {commit_hash[:8]}")
-    else:
-        Console.warn("Nothing to commit")
-    
+    # No commit here - first commit happens after commander/executor/user_review in iter 1
     return task_id, actual_branch, session_id
 
 
