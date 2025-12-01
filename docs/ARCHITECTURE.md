@@ -305,5 +305,5 @@ Auditor 会收到新指令，重新规划 Roadmap。
 
 ---
 
-*文档版本: 2024-11-30*
+*文档版本: 2025-11-30*
 *对应 Orchestrator.py 版本: step mode + YOLO mode default on*
