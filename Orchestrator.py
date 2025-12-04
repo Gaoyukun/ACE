@@ -50,6 +50,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -143,6 +144,21 @@ class Console:
 
 MAX_CODEX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5
+
+
+def format_duration(seconds: float) -> str:
+    """Format duration in human-readable form."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        minutes = int(seconds // 60)
+        secs = seconds % 60
+        return f"{minutes}m {secs:.1f}s"
+    else:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = seconds % 60
+        return f"{hours}h {minutes}m {secs:.0f}s"
 
 
 def invoke_codex(
@@ -485,20 +501,72 @@ def run_orchestration(
     context_dir = usr_cwd / "context"
     context_dir.mkdir(exist_ok=True)
     
-    # Init phase
+    # Init phase: Auditor initializes project and sets first task_id
+    init_aud_start = time.time()
     task_id, branch, init_auditor_sid = phase_init(usr_cwd, requirement, branch_prefix, resume, yolo, new_branch)
+    init_aud_duration = time.time() - init_aud_start
     
-    # Main loop
+    # Main loop: A -> C -> E -> user_review -> commit
     iteration = 0
     while iteration < max_iterations:
         iteration += 1
         Console.banner(f"ITERATION {iteration} - Task: {task_id}")
+        iter_start = time.time()
+        
+        # Auditor (iteration 1 uses init timing)
+        if iteration == 1:
+            aud_duration = init_aud_duration
+        else:
+            aud_start = time.time()
+            auditor_sid = phase_auditor_review(usr_cwd, task_id, yolo)
+            aud_duration = time.time() - aud_start
+            
+            # Check for stop signals after auditor
+            new_task_id = read_task_id(usr_cwd)
+            if not new_task_id:
+                Console.fatal("current_task_id.txt is missing or empty after auditor review")
+            
+            signal = new_task_id.lower()
+            if signal == "finish":
+                Console.done()
+                Console.info(f"🎉 Project released in {iteration - 1} iteration(s)")
+                Console.info(f"Branch: {branch}")
+                return
+            
+            if signal == "abort":
+                Console.aborted()
+                Console.info(f"💀 Project killed after {iteration - 1} iteration(s)")
+                Console.info(f"Branch: {branch}")
+                Console.warn("Check Project_Roadmap.md for termination reason")
+                sys.exit(1)
+            
+            if new_task_id != task_id:
+                task_id = new_task_id
+                Console.info(f"New task: {task_id}")
         
         # Commander
+        cmd_start = time.time()
         commander_sid = phase_commander(usr_cwd, task_id, yolo)
+        cmd_duration = time.time() - cmd_start
         
         # Executor
+        exec_start = time.time()
         executor_sid = phase_executor(usr_cwd, task_id, yolo)
+        exec_duration = time.time() - exec_start
+        
+        # Ensure all codex output is flushed before printing timing
+        sys.stdout.flush()
+        sys.stderr.flush()
+        time.sleep(0.5)  # Brief delay for any async output to complete
+        
+        # Print timing before user feedback
+        Console.info("─" * 40)
+        Console.info(f"⏱️  Auditor:   {format_duration(aud_duration)}")
+        Console.info(f"⏱️  Commander: {format_duration(cmd_duration)}")
+        Console.info(f"⏱️  Executor:  {format_duration(exec_duration)}")
+        Console.info(f"⏱️  Total:     {format_duration(time.time() - iter_start)}")
+        Console.info(f"🕐 Completed: {datetime.now().strftime('%y/%m/%d %H:%M:%S')}")
+        Console.info("─" * 40)
         
         # Step mode: pause for user feedback before commit
         if step:
@@ -507,42 +575,13 @@ def run_orchestration(
                 Console.info("User requested quit")
                 return
             if user_feedback:
-                # Store feedback for auditor review
+                # Store feedback for next auditor review
                 feedback_file = usr_cwd / "context" / "user_feedback.txt"
                 feedback_file.write_text(user_feedback, encoding="utf-8")
                 Console.info(f"Feedback saved: {user_feedback[:50]}{'...' if len(user_feedback) > 50 else ''}")
         
-        # Commit (after user feedback, before auditor)
+        # Commit (after user feedback)
         commit_iteration(usr_cwd, task_id, commander_sid, executor_sid)
-        
-        # Auditor review
-        auditor_sid = phase_auditor_review(usr_cwd, task_id, yolo)
-        
-        # Check completion
-        new_task_id = read_task_id(usr_cwd)
-        if not new_task_id:
-            Console.fatal("current_task_id.txt is missing or empty after auditor review")
-        
-        # Check for stop signals
-        signal = new_task_id.lower()
-        if signal == "finish":
-            Console.done()
-            Console.info(f"🎉 Project released in {iteration} iteration(s)")
-            Console.info(f"Branch: {branch}")
-            return
-        
-        if signal == "abort":
-            Console.aborted()
-            Console.info(f"💀 Project killed after {iteration} iteration(s)")
-            Console.info(f"Branch: {branch}")
-            Console.warn("Check Project_Roadmap.md for termination reason")
-            sys.exit(1)
-        
-        if new_task_id == task_id:
-            Console.warn(f"Task ID unchanged ({task_id}), auditor may have stalled")
-        
-        task_id = new_task_id
-        Console.info(f"Next task: {task_id}")
     
     Console.error(f"Max iterations ({max_iterations}) reached without completion")
     sys.exit(1)
