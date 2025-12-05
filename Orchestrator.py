@@ -297,27 +297,22 @@ def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, re
     Console.phase("INITIALIZATION" if not resume else "RESUME", f"auditor{role_suffix}")
     
     if resume:
-        # Resume mode: ask auditor to review existing context and continue
+        # Resume mode: review existing context and continue
         init_task = (
-            f'你是 Linus。这是一个已存在的项目，我们需要继续之前的工作。\n\n'
-            f'请阅读 `./context/System_State_Snapshot.md` 和 `./context/Project_Roadmap.md`，\n'
-            f'了解当前项目状态和进度。\n\n'
-            f'然后检查 `./context/current_task_id.txt`，确认当前任务。\n'
-            f'如果需要，更新 Snapshot 和 Roadmap，然后设置下一个要执行的 task_id。'
+            f'继续已有项目。\n'
+            f'1. 读取 `./context/` 下的 Snapshot 和 Roadmap\n'
+            f'2. 确认下一个 task_id 并写入 `current_task_id.txt`'
         )
         if requirement:
-            init_task += (
-                f'\n\n**⚠️ 用户新指令:**\n{requirement}\n\n'
-                f'请根据以上指令调整项目目标和任务规划。'
-            )
+            init_task += f'\n\n**用户新指令:** {requirement}'
     else:
         # Init mode: start fresh project
         init_task = (
-            f'你是 Linus。这是我们的新项目。\n'
-            f'**终极目标:** {requirement}\n\n'
-            f'目前项目是空的。请初始化 `context/System_State_Snapshot.md`。\n'
-            f'请基于终极目标，创建一个初步的 `context/Project_Roadmap.md`，'
-            f'将目标拆解并指定第一个任务。'
+            f'新项目初始化。\n'
+            f'**目标:** {requirement}\n\n'
+            f'1. 创建 `context/System_State_Snapshot.md`\n'
+            f'2. 创建 `context/Project_Roadmap.md`（按依赖拆分任务，独立任务合并）\n'
+            f'3. 写入第一个 task_id 到 `context/current_task_id.txt`'
         )
     
     output, session_id = invoke_codex("auditor", usr_cwd, init_task, yolo=yolo, lite=lite)
