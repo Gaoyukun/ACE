@@ -2,8 +2,16 @@
 """
 ACE Orchestrator - AI Collaboration Engine
 
-Drives a three-role workflow (auditor/commander/executor) to complete tasks,
-with git commits after each iteration until the task is finished or aborted.
+Drives a four-role workflow based on Stanford's ACE (Generator-Reflector-Curator) pattern:
+  - Auditor/Curator: Project management + Playbook curation
+  - Commander: Task planning with Playbook references
+  - Generator: Code execution using Playbook knowledge
+  - Reflector: Result analysis and bullet tagging
+
+Key Features:
+  - Playbook: Structured knowledge base for best practices, anti-patterns, and techniques
+  - Bullet Tagging: Track effectiveness of knowledge items (helpful/harmful/neutral)
+  - Context Evolution: Maintain critical information across iterations
 
 Stop Signals (from auditor via current_task_id.txt):
     finish  - Project completed successfully (exit 0)
@@ -167,10 +175,15 @@ def invoke_codex(
     task: str,
     timeout: int = 1800,
     max_retries: int = MAX_CODEX_RETRIES,
-    yolo: bool = False
+    yolo: bool = False,
+    lite: bool = False
 ) -> Tuple[str, Optional[str]]:
     """
     Invoke codex.py with a specific role and task, with automatic retry on failure.
+    
+    Args:
+        role: Role name (auditor, commander, generator, reflector)
+        lite: If True, use lite role definitions (e.g., auditor_lite instead of auditor)
     
     Returns:
         (output_text, session_id) - session_id may be None if not captured
@@ -180,17 +193,20 @@ def invoke_codex(
     """
     codex_script = SCRIPT_DIR / "tools" / "codex.py"
     
+    # Use lite role if specified
+    actual_role = f"{role}_lite" if lite else role
+    
     cmd = [
         sys.executable,
         str(codex_script),
-        "--role", role,
+        "--role", actual_role,
         "--usr-cwd", str(usr_cwd),
     ]
     if yolo:
         cmd.append("--yolo")
     cmd.append(task)
     
-    Console.info(f"Running codex: role={role}")
+    Console.info(f"Running codex: role={actual_role}")
     Console.info(f"Task: {task[:80]}{'...' if len(task) > 80 else ''}")
     
     last_error = None
@@ -354,45 +370,114 @@ def phase_commander(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     return session_id
 
 
-def phase_executor(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
+def phase_generator(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     """
-    Executor phase: execute task and generate execution_Log_<task_id>.md
+    Generator phase: execute task using Playbook and generate Execution_Log_<task_id>.md
+    
+    This replaces the old Executor phase with ACE-style Generator that:
+    1. Retrieves relevant bullets from Playbook
+    2. Applies best practices and avoids anti-patterns
+    3. Generates code with explicit bullet references
     
     Returns:
-        executor_session_id
+        generator_session_id
     """
-    Console.phase(f"EXECUTOR for Task: {task_id}", "executor")
+    Console.phase(f"GENERATOR for Task: {task_id}", "generator")
     
     task = f"task_id: {task_id}"
-    output, session_id = invoke_codex("executor", usr_cwd, task, yolo=yolo)
+    output, session_id = invoke_codex("generator", usr_cwd, task, yolo=yolo)
     
     if not session_id:
-        Console.warn("No SESSION_ID from executor")
+        Console.warn("No SESSION_ID from generator")
         session_id = "unknown"
     
     # Check log file exists
     log_path = f"context/Execution_Log_{task_id}.md"
     if not file_exists(usr_cwd, log_path):
-        Console.fatal(f"Executor failed to generate {log_path}")
+        Console.fatal(f"Generator failed to generate {log_path}")
     
     Console.success(f"Generated: {log_path}")
     return session_id
 
 
+def phase_executor(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
+    """
+    Executor phase: execute task and generate execution_Log_<task_id>.md
+    (Legacy alias for phase_generator for backward compatibility)
+    
+    Returns:
+        executor_session_id
+    """
+    return phase_generator(usr_cwd, task_id, yolo)
+
+
+def phase_reflector(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
+    """
+    Reflector phase: analyze execution results and generate Reflection_<task_id>.md
+    
+    This is the ACE-style Reflector that:
+    1. Compares DoD with actual results (Gap Analysis)
+    2. Performs root cause analysis for failures
+    3. Tags Playbook bullets as helpful/harmful/neutral
+    4. Extracts new insights for Curator
+    
+    Returns:
+        reflector_session_id
+    """
+    Console.phase(f"REFLECTOR for Task: {task_id}", "reflector")
+    
+    task = f"task_id: {task_id}"
+    output, session_id = invoke_codex("reflector", usr_cwd, task, yolo=yolo)
+    
+    if not session_id:
+        Console.warn("No SESSION_ID from reflector")
+        session_id = "unknown"
+    
+    # Check reflection file exists
+    reflection_path = f"context/Reflection_{task_id}.md"
+    if not file_exists(usr_cwd, reflection_path):
+        Console.warn(f"Reflector did not generate {reflection_path} - continuing anyway")
+    else:
+        Console.success(f"Generated: {reflection_path}")
+    
+    return session_id
+
+
 def phase_auditor_review(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     """
-    Auditor review phase: review execution log and update current_task_id
+    Auditor review phase (with Curator responsibilities):
+    1. Review execution log and reflection
+    2. Update Playbook based on Reflector's suggestions
+    3. Update current_task_id
     
     Returns:
         auditor_session_id
     """
-    Console.phase(f"AUDITOR REVIEW for Task: {task_id}", "auditor")
+    Console.phase(f"AUDITOR/CURATOR REVIEW for Task: {task_id}", "auditor")
+    
+    # Check if reflection exists
+    reflection_exists = file_exists(usr_cwd, f"context/Reflection_{task_id}.md")
     
     task = (
-        f"task_id: {task_id} 已被executor标记为完成。\n"
-        f"请审查 `./context/Execution_Log_{task_id}.md`，\n"
-        f"并更新 `./context/current_task_id.txt`。\n"
-        f"如果所有任务完成，写入 `finish` 至 `./context/current_task_id.txt` 中。"
+        f"task_id: {task_id} 已被 Generator 执行完成。\n\n"
+        f"**请执行以下审查流程:**\n\n"
+        f"1. **审查执行日志:** `./context/Execution_Log_{task_id}.md`\n"
+    )
+    
+    if reflection_exists:
+        task += (
+            f"2. **审查反思报告:** `./context/Reflection_{task_id}.md`\n"
+            f"   - 处理 Bullet Tags (helpful/harmful/neutral)\n"
+            f"   - 执行 Curator 建议的 Playbook 操作 (ADD/UPDATE/DELETE)\n"
+            f"3. **更新 Playbook:** 在 `System_State_Snapshot.md` 中更新经验知识库\n"
+            f"4. **上下文演进:** 确保关键信息传递到下一轮\n"
+        )
+    
+    task += (
+        f"5. **更新 `./context/current_task_id.txt`:**\n"
+        f"   - 如果所有任务完成，写入 `finish`\n"
+        f"   - 如果项目需要终止，写入 `abort`\n"
+        f"   - 否则写入下一个任务 ID"
     )
     
     # Check for user feedback from step mode
@@ -415,7 +500,7 @@ def phase_auditor_review(usr_cwd: Path, task_id: str, yolo: bool = False) -> str
         Console.warn("No SESSION_ID from auditor review")
         session_id = "unknown"
     
-    Console.success("Auditor review completed")
+    Console.success("Auditor/Curator review completed")
     return session_id
 
 
@@ -423,14 +508,18 @@ def commit_iteration(
     usr_cwd: Path,
     task_id: str,
     commander_sid: str,
-    executor_sid: str
+    generator_sid: str,
+    reflector_sid: Optional[str] = None
 ) -> Optional[str]:
-    """Commit changes after commander and executor phases."""
+    """Commit changes after commander, generator, and reflector phases."""
     commit_msg = (
         f"task: {task_id}\n"
         f"commander_session_id: {commander_sid}\n"
-        f"executor_session_id: {executor_sid}"
+        f"generator_session_id: {generator_sid}"
     )
+    
+    if reflector_sid:
+        commit_msg += f"\nreflector_session_id: {reflector_sid}"
     
     commit_hash = stage_and_commit(usr_cwd, commit_msg)
     if commit_hash:
@@ -475,11 +564,15 @@ def run_orchestration(
     new_branch: bool = False
 ):
     """
-    Main orchestration loop.
+    Main orchestration loop with ACE-style Generator-Reflector-Curator workflow.
     
-    Runs the init phase, then iterates commander -> executor -> auditor
-    until task_id becomes 'finish' or max iterations reached.
+    Workflow per iteration:
+    1. Auditor/Curator: Review previous results, update Playbook, set next task
+    2. Commander: Generate task brief with Playbook references
+    3. Generator: Execute task using Playbook knowledge
+    4. Reflector: Analyze results, tag bullets, extract insights
     
+    Runs until task_id becomes 'finish' or max iterations reached.
     If step=True, pauses after each iteration for user feedback.
     """
     Console.banner("ACE ORCHESTRATOR STARTING")
@@ -549,10 +642,15 @@ def run_orchestration(
         commander_sid = phase_commander(usr_cwd, task_id, yolo)
         cmd_duration = time.time() - cmd_start
         
-        # Executor
-        exec_start = time.time()
-        executor_sid = phase_executor(usr_cwd, task_id, yolo)
-        exec_duration = time.time() - exec_start
+        # Generator (formerly Executor)
+        gen_start = time.time()
+        generator_sid = phase_generator(usr_cwd, task_id, yolo)
+        gen_duration = time.time() - gen_start
+        
+        # Reflector (new ACE-style phase)
+        ref_start = time.time()
+        reflector_sid = phase_reflector(usr_cwd, task_id, yolo)
+        ref_duration = time.time() - ref_start
         
         # Ensure all codex output is flushed before printing timing
         sys.stdout.flush()
@@ -561,10 +659,11 @@ def run_orchestration(
         
         # Print timing before user feedback
         Console.info("─" * 40)
-        Console.info(f"⏱️  Auditor:   {format_duration(aud_duration)}")
-        Console.info(f"⏱️  Commander: {format_duration(cmd_duration)}")
-        Console.info(f"⏱️  Executor:  {format_duration(exec_duration)}")
-        Console.info(f"⏱️  Total:     {format_duration(time.time() - iter_start)}")
+        Console.info(f"⏱️  Auditor:    {format_duration(aud_duration)}")
+        Console.info(f"⏱️  Commander:  {format_duration(cmd_duration)}")
+        Console.info(f"⏱️  Generator:  {format_duration(gen_duration)}")
+        Console.info(f"⏱️  Reflector:  {format_duration(ref_duration)}")
+        Console.info(f"⏱️  Total:      {format_duration(time.time() - iter_start)}")
         Console.info(f"🕐 Completed: {datetime.now().strftime('%y/%m/%d %H:%M:%S')}")
         Console.info("─" * 40)
         
@@ -581,7 +680,7 @@ def run_orchestration(
                 Console.info(f"Feedback saved: {user_feedback[:50]}{'...' if len(user_feedback) > 50 else ''}")
         
         # Commit (after user feedback)
-        commit_iteration(usr_cwd, task_id, commander_sid, executor_sid)
+        commit_iteration(usr_cwd, task_id, commander_sid, generator_sid, reflector_sid)
     
     Console.error(f"Max iterations ({max_iterations}) reached without completion")
     sys.exit(1)
@@ -678,6 +777,13 @@ def parse_cli_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Create a new branch for the task [default: False]"
+    )
+    
+    parser.add_argument(
+        "--lite", "-l",
+        action="store_true",
+        default=False,
+        help="Use lite role definitions (simpler, more collaborative) [default: False]"
     )
     
     args = parser.parse_args()
