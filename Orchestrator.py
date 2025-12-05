@@ -30,7 +30,8 @@ Options:
     -s, --step          Step mode: pause for feedback [default: on]
     --no-step           Disable step mode (run continuously)
     -b, --new-branch    Create a new branch for the task [default: off]
-    -l, --lite          Use lite role definitions (simpler) [default: off]
+    -l, --lite          Use lite role definitions (simpler) [default: on]
+    --no-lite           Use full role definitions (more detailed)
     --branch-prefix     Prefix for task branches (default: task)
     --max-iterations    Maximum iterations before stopping (default: 50)
     -h, --help          Show this help message
@@ -456,43 +457,16 @@ def phase_auditor_review(usr_cwd: Path, task_id: str, yolo: bool = False, lite: 
     role_suffix = "_lite" if lite else ""
     Console.phase(f"AUDITOR/CURATOR REVIEW for Task: {task_id}", f"auditor{role_suffix}")
     
-    # Check if reflection exists
-    reflection_exists = file_exists(usr_cwd, f"context/Reflection_{task_id}.md")
+    # Build minimal task prompt - role file already contains workflow details
+    task = f"审查 task_id: {task_id}"
     
-    task = (
-        f"task_id: {task_id} 已被 Generator 执行完成。\n\n"
-        f"**请执行以下审查流程:**\n\n"
-        f"1. **审查执行日志:** `./context/Execution_Log_{task_id}.md`\n"
-    )
-    
-    if reflection_exists:
-        task += (
-            f"2. **审查反思报告:** `./context/Reflection_{task_id}.md`\n"
-            f"   - 处理 Bullet Tags (helpful/harmful/neutral)\n"
-            f"   - 执行 Curator 建议的 Playbook 操作 (ADD/UPDATE/DELETE)\n"
-            f"3. **更新 Playbook:** 在 `System_State_Snapshot.md` 中更新经验知识库\n"
-            f"4. **上下文演进:** 确保关键信息传递到下一轮\n"
-        )
-    
-    task += (
-        f"5. **更新 `./context/current_task_id.txt`:**\n"
-        f"   - 如果所有任务完成，写入 `finish`\n"
-        f"   - 如果项目需要终止，写入 `abort`\n"
-        f"   - 否则写入下一个任务 ID"
-    )
-    
-    # Check for user feedback from step mode
+    # Only add user feedback if exists
     feedback_file = usr_cwd / "context" / "user_feedback.txt"
     if feedback_file.exists():
         user_feedback = feedback_file.read_text(encoding="utf-8").strip()
         if user_feedback:
-            task += (
-                f"\n\n**⚠️ 用户反馈 (User Feedback):**\n"
-                f"{user_feedback}\n\n"
-                f"请在审查时考虑用户的反馈意见，并在下一轮任务中体现这些修改。"
-            )
+            task += f"\n\n**用户反馈:** {user_feedback}"
             Console.info(f"Including user feedback: {user_feedback[:50]}...")
-        # Clear feedback file after reading
         feedback_file.unlink()
     
     output, session_id = invoke_codex("auditor", usr_cwd, task, yolo=yolo, lite=lite)
@@ -786,8 +760,14 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--lite", "-l",
         action="store_true",
-        default=False,
-        help="Use lite role definitions (simpler, more collaborative) [default: False]"
+        default=True,
+        help="Use lite role definitions (simpler) [default: True]"
+    )
+    parser.add_argument(
+        "--no-lite",
+        action="store_false",
+        dest="lite",
+        help="Use full role definitions (more detailed)"
     )
     
     args = parser.parse_args()

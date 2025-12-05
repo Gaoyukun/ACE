@@ -1,122 +1,122 @@
 # Execution Log: Task-001
 
 ## 使用的 Playbook
-- [practice-001] 应用方式: 按 Brief 要求完成 1~20 脚本的创建与验证，保持输出格式一致。
-- [anti-001] 避免方式: 未做超出编号范围的变更，避免添加无关文件或多余逻辑。
+- [practice-001] 应用方式: 按 Brief 要求一次性生成 1-20 号脚本并运行校验，补充经验记录。
+- [anti-001] 避免方式: 暂无记录可用，保持关注未触发。
 
 ## 代码实现
-### `1.py`
-```python
+### `hello1.py`
+```py
 print("hello world 1")
 ```
 
-### `2.py`
-```python
+### `hello2.py`
+```py
 print("hello world 2")
 ```
 
-### `3.py`
-```python
+### `hello3.py`
+```py
 print("hello world 3")
 ```
 
-### `4.py`
-```python
+### `hello4.py`
+```py
 print("hello world 4")
 ```
 
-### `5.py`
-```python
+### `hello5.py`
+```py
 print("hello world 5")
 ```
 
-### `6.py`
-```python
+### `hello6.py`
+```py
 print("hello world 6")
 ```
 
-### `7.py`
-```python
+### `hello7.py`
+```py
 print("hello world 7")
 ```
 
-### `8.py`
-```python
+### `hello8.py`
+```py
 print("hello world 8")
 ```
 
-### `9.py`
-```python
+### `hello9.py`
+```py
 print("hello world 9")
 ```
 
-### `10.py`
-```python
+### `hello10.py`
+```py
 print("hello world 10")
 ```
 
-### `11.py`
-```python
+### `hello11.py`
+```py
 print("hello world 11")
 ```
 
-### `12.py`
-```python
+### `hello12.py`
+```py
 print("hello world 12")
 ```
 
-### `13.py`
-```python
+### `hello13.py`
+```py
 print("hello world 13")
 ```
 
-### `14.py`
-```python
+### `hello14.py`
+```py
 print("hello world 14")
 ```
 
-### `15.py`
-```python
+### `hello15.py`
+```py
 print("hello world 15")
 ```
 
-### `16.py`
-```python
+### `hello16.py`
+```py
 print("hello world 16")
 ```
 
-### `17.py`
-```python
+### `hello17.py`
+```py
 print("hello world 17")
 ```
 
-### `18.py`
-```python
+### `hello18.py`
+```py
 print("hello world 18")
 ```
 
-### `19.py`
-```python
+### `hello19.py`
+```py
 print("hello world 19")
 ```
 
-### `20.py`
-```python
+### `hello20.py`
+```py
 print("hello world 20")
 ```
 
 ## 执行证据
 ### 构建检查
-- Command: `Get-ChildItem -Filter *.py | ForEach-Object { python -m py_compile $_.FullName }`
-- Result: 通过
+- Command: `N/A（独立脚本无需构建）`
+- Result: 不适用
 
 ### 验证测试
-- Command: `for ($i=1; $i -le 20; $i++) { python "$i.py" }`
-- Result: 通过（输出 hello world 1~20）
+- Command: `python - <<'PY'\nimport subprocess, sys, pathlib\nbase = pathlib.Path(r\"\\\\?\\D:\\Repo\\prompt\\ACE\\test1\")\nok = True\nfor i in range(1, 21):\n    file = base / f\"hello{i}.py\"\n    if not file.exists():\n        print(f\"missing {file.name}\")\n        ok = False\n        continue\n    result = subprocess.run([sys.executable, str(file)], capture_output=True, text=True)\n    out = result.stdout.strip()\n    exp = f\"hello world {i}\"\n    if out != exp or result.returncode != 0:\n        print(f\"{file.name}: expected '{exp}', got '{out}', code {result.returncode}\")\n        ok = False\nif ok:\n    print(\"all scripts passed\")\nPY`
+- Result: 通过（all scripts passed）
 
 ## 验收核对
-- [x] 存在1~20共20个以编号命名的Python脚本，无缺失或额外文件（见证据：文件列表与构建检查）。
-- [x] 每个脚本执行时输出的文本为 `hello world <编号>`，且编号与文件名匹配（见证据：验证测试输出）。
+- [x] 共 20 个独立 Python 脚本，编号连续 1-20，无缺失或重复（见代码实现）。
+- [x] 每个脚本执行时仅输出对应的 “hello world N” 无额外内容（见验证测试）。
 
 ## 总结
 - **结果:** SUCCESS
