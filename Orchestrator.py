@@ -30,6 +30,7 @@ Options:
     -s, --step          Step mode: pause for feedback [default: on]
     --no-step           Disable step mode (run continuously)
     -b, --new-branch    Create a new branch for the task [default: off]
+    -l, --lite          Use lite role definitions (simpler) [default: off]
     --branch-prefix     Prefix for task branches (default: task)
     --max-iterations    Maximum iterations before stopping (default: 50)
     -h, --help          Show this help message
@@ -282,7 +283,7 @@ def file_exists(usr_cwd: Path, relative_path: str) -> bool:
 # Workflow Phases
 # ============================================================================
 
-def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, resume: bool = False, yolo: bool = False, new_branch: bool = False) -> Tuple[str, str, str]:
+def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, resume: bool = False, yolo: bool = False, new_branch: bool = False, lite: bool = False) -> Tuple[str, str, str]:
     """
     Initialization phase:
     1. Call auditor to initialize/resume context files
@@ -292,7 +293,8 @@ def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, re
     Returns:
         (task_id, branch_name, auditor_session_id)
     """
-    Console.phase("INITIALIZATION" if not resume else "RESUME", "auditor")
+    role_suffix = "_lite" if lite else ""
+    Console.phase("INITIALIZATION" if not resume else "RESUME", f"auditor{role_suffix}")
     
     if resume:
         # Resume mode: ask auditor to review existing context and continue
@@ -318,7 +320,7 @@ def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, re
             f'将目标拆解并指定第一个任务。'
         )
     
-    output, session_id = invoke_codex("auditor", usr_cwd, init_task, yolo=yolo)
+    output, session_id = invoke_codex("auditor", usr_cwd, init_task, yolo=yolo, lite=lite)
     
     if not session_id:
         Console.warn("No SESSION_ID captured from auditor init")
@@ -345,17 +347,18 @@ def phase_init(usr_cwd: Path, requirement: Optional[str], branch_prefix: str, re
     return task_id, actual_branch, session_id
 
 
-def phase_commander(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
+def phase_commander(usr_cwd: Path, task_id: str, yolo: bool = False, lite: bool = False) -> str:
     """
     Commander phase: generate AI_Task_Brief_<task_id>.md
     
     Returns:
         commander_session_id
     """
-    Console.phase(f"COMMANDER for Task: {task_id}", "commander")
+    role_suffix = "_lite" if lite else ""
+    Console.phase(f"COMMANDER for Task: {task_id}", f"commander{role_suffix}")
     
     task = f"task_id: {task_id}"
-    output, session_id = invoke_codex("commander", usr_cwd, task, yolo=yolo)
+    output, session_id = invoke_codex("commander", usr_cwd, task, yolo=yolo, lite=lite)
     
     if not session_id:
         Console.warn("No SESSION_ID from commander")
@@ -370,7 +373,7 @@ def phase_commander(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     return session_id
 
 
-def phase_generator(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
+def phase_generator(usr_cwd: Path, task_id: str, yolo: bool = False, lite: bool = False) -> str:
     """
     Generator phase: execute task using Playbook and generate Execution_Log_<task_id>.md
     
@@ -382,10 +385,11 @@ def phase_generator(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     Returns:
         generator_session_id
     """
-    Console.phase(f"GENERATOR for Task: {task_id}", "generator")
+    role_suffix = "_lite" if lite else ""
+    Console.phase(f"GENERATOR for Task: {task_id}", f"generator{role_suffix}")
     
     task = f"task_id: {task_id}"
-    output, session_id = invoke_codex("generator", usr_cwd, task, yolo=yolo)
+    output, session_id = invoke_codex("generator", usr_cwd, task, yolo=yolo, lite=lite)
     
     if not session_id:
         Console.warn("No SESSION_ID from generator")
@@ -400,7 +404,7 @@ def phase_generator(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     return session_id
 
 
-def phase_executor(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
+def phase_executor(usr_cwd: Path, task_id: str, yolo: bool = False, lite: bool = False) -> str:
     """
     Executor phase: execute task and generate execution_Log_<task_id>.md
     (Legacy alias for phase_generator for backward compatibility)
@@ -408,10 +412,10 @@ def phase_executor(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     Returns:
         executor_session_id
     """
-    return phase_generator(usr_cwd, task_id, yolo)
+    return phase_generator(usr_cwd, task_id, yolo, lite)
 
 
-def phase_reflector(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
+def phase_reflector(usr_cwd: Path, task_id: str, yolo: bool = False, lite: bool = False) -> str:
     """
     Reflector phase: analyze execution results and generate Reflection_<task_id>.md
     
@@ -424,10 +428,11 @@ def phase_reflector(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     Returns:
         reflector_session_id
     """
-    Console.phase(f"REFLECTOR for Task: {task_id}", "reflector")
+    role_suffix = "_lite" if lite else ""
+    Console.phase(f"REFLECTOR for Task: {task_id}", f"reflector{role_suffix}")
     
     task = f"task_id: {task_id}"
-    output, session_id = invoke_codex("reflector", usr_cwd, task, yolo=yolo)
+    output, session_id = invoke_codex("reflector", usr_cwd, task, yolo=yolo, lite=lite)
     
     if not session_id:
         Console.warn("No SESSION_ID from reflector")
@@ -443,7 +448,7 @@ def phase_reflector(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
     return session_id
 
 
-def phase_auditor_review(usr_cwd: Path, task_id: str, yolo: bool = False) -> str:
+def phase_auditor_review(usr_cwd: Path, task_id: str, yolo: bool = False, lite: bool = False) -> str:
     """
     Auditor review phase (with Curator responsibilities):
     1. Review execution log and reflection
@@ -453,7 +458,8 @@ def phase_auditor_review(usr_cwd: Path, task_id: str, yolo: bool = False) -> str
     Returns:
         auditor_session_id
     """
-    Console.phase(f"AUDITOR/CURATOR REVIEW for Task: {task_id}", "auditor")
+    role_suffix = "_lite" if lite else ""
+    Console.phase(f"AUDITOR/CURATOR REVIEW for Task: {task_id}", f"auditor{role_suffix}")
     
     # Check if reflection exists
     reflection_exists = file_exists(usr_cwd, f"context/Reflection_{task_id}.md")
@@ -494,7 +500,7 @@ def phase_auditor_review(usr_cwd: Path, task_id: str, yolo: bool = False) -> str
         # Clear feedback file after reading
         feedback_file.unlink()
     
-    output, session_id = invoke_codex("auditor", usr_cwd, task, yolo=yolo)
+    output, session_id = invoke_codex("auditor", usr_cwd, task, yolo=yolo, lite=lite)
     
     if not session_id:
         Console.warn("No SESSION_ID from auditor review")
@@ -561,7 +567,8 @@ def run_orchestration(
     resume: bool = False,
     yolo: bool = False,
     step: bool = False,
-    new_branch: bool = False
+    new_branch: bool = False,
+    lite: bool = False
 ):
     """
     Main orchestration loop with ACE-style Generator-Reflector-Curator workflow.
@@ -574,10 +581,12 @@ def run_orchestration(
     
     Runs until task_id becomes 'finish' or max iterations reached.
     If step=True, pauses after each iteration for user feedback.
+    If lite=True, uses simplified role definitions.
     """
     Console.banner("ACE ORCHESTRATOR STARTING")
     Console.info(f"Project: {usr_cwd}")
     Console.info(f"Mode: {'RESUME' if resume else 'INIT'}")
+    Console.info(f"Role Style: {'LITE' if lite else 'FULL'}")
     
     # 设置日志目录为用户项目目录
     set_log_dir(usr_cwd)
@@ -596,10 +605,10 @@ def run_orchestration(
     
     # Init phase: Auditor initializes project and sets first task_id
     init_aud_start = time.time()
-    task_id, branch, init_auditor_sid = phase_init(usr_cwd, requirement, branch_prefix, resume, yolo, new_branch)
+    task_id, branch, init_auditor_sid = phase_init(usr_cwd, requirement, branch_prefix, resume, yolo, new_branch, lite)
     init_aud_duration = time.time() - init_aud_start
     
-    # Main loop: A -> C -> E -> user_review -> commit
+    # Main loop: A -> C -> G -> R -> user_review -> commit
     iteration = 0
     while iteration < max_iterations:
         iteration += 1
@@ -611,7 +620,7 @@ def run_orchestration(
             aud_duration = init_aud_duration
         else:
             aud_start = time.time()
-            auditor_sid = phase_auditor_review(usr_cwd, task_id, yolo)
+            auditor_sid = phase_auditor_review(usr_cwd, task_id, yolo, lite)
             aud_duration = time.time() - aud_start
             
             # Check for stop signals after auditor
@@ -639,17 +648,17 @@ def run_orchestration(
         
         # Commander
         cmd_start = time.time()
-        commander_sid = phase_commander(usr_cwd, task_id, yolo)
+        commander_sid = phase_commander(usr_cwd, task_id, yolo, lite)
         cmd_duration = time.time() - cmd_start
         
         # Generator (formerly Executor)
         gen_start = time.time()
-        generator_sid = phase_generator(usr_cwd, task_id, yolo)
+        generator_sid = phase_generator(usr_cwd, task_id, yolo, lite)
         gen_duration = time.time() - gen_start
         
         # Reflector (new ACE-style phase)
         ref_start = time.time()
-        reflector_sid = phase_reflector(usr_cwd, task_id, yolo)
+        reflector_sid = phase_reflector(usr_cwd, task_id, yolo, lite)
         ref_duration = time.time() - ref_start
         
         # Ensure all codex output is flushed before printing timing
@@ -814,7 +823,8 @@ def main():
             resume=args.resume,
             yolo=args.yolo,
             step=args.step,
-            new_branch=args.new_branch
+            new_branch=args.new_branch,
+            lite=args.lite
         )
     except GitError as e:
         Console.fatal(f"Git error: {e}")
